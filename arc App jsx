@@ -1,0 +1,360 @@
+import React, { useEffect, useState, useCallback, useRef } from "react";
+import { DragDropContext, Droppable, Draggable } from "react-beautiful-dnd";
+import { v4 as uuidv4 } from "uuid";
+
+/* Firebase modular */
+import { initializeApp } from "firebase/app";
+import {
+  getAuth,
+  sendSignInLinkToEmail,
+  isSignInWithEmailLink,
+  signInWithEmailLink,
+  signOut,
+  onAuthStateChanged,
+} from "firebase/auth";
+import {
+  getFirestore,
+  doc,
+  setDoc,
+  onSnapshot,
+} from "firebase/firestore";
+
+/* Map */
+import { MapContainer, TileLayer, Marker, Popup } from "react-leaflet";
+import L from "leaflet";
+
+/* Deine Firebase-Config importieren (du fügst sie in src/firebaseConfig.js ein) */
+import { FIREBASE_CONFIG } from "./firebaseConfig";
+
+/* ---------- minimal country coords (erweiterbar) ---------- */
+const COUNTRY_COORDS = {
+  "New Zealand": [-40.9006, 174.8860],
+  "Germany": [51.1657, 10.4515],
+  "Romania": [45.9432, 24.9668],
+  "Poland": [51.9194, 19.1451],
+  "Thailand": [15.8700, 100.9925],
+  "Colombia": [4.5709, -74.2973],
+  "Chile": [-35.6751, -71.5430],
+  "Peru": [-9.189967, -75.015152],
+  "Austria": [47.5162, 14.5501],
+  "Slovenia": [46.1512, 14.9955],
+  // du kannst hier später weitere Länder hinzufügen
+};
+
+/* ---------- init firebase ---------- */
+const app = initializeApp(FIREBASE_CONFIG);
+const auth = getAuth(app);
+const db = getFirestore(app);
+
+/* ---------- Priority configs ---------- */
+const TRAVEL_PRIORITIES = [
+  { id: "must", title: "🟥 Must Visit", color: "#ef4444" },
+  { id: "high", title: "🟧 High Priority", color: "#f97316" },
+  { id: "maybe", title: "🟨 Maybe Later", color: "#f59e0b" },
+  { id: "not", title: "🟩 Not Now", color: "#10b981" },
+];
+
+const MOVE_PRIORITIES = [
+  { id: "dream", title: "💖 Traumziel", color: "#7c3aed" },
+  { id: "interest", title: "🙂 Wäre interessant", color: "#06b6d4" },
+  { id: "unlikely", title: "🤔 Eher unwahrscheinlich", color: "#94a3b8" },
+];
+
+const LOCAL_KEY = "travel-priority-local";
+
+function useDebouncedSave(saveFn, delay = 700) {
+  const tRef = useRef(null);
+  return (data) => {
+    if (tRef.current) clearTimeout(tRef.current);
+    tRef.current = setTimeout(() => saveFn(data), delay);
+  };
+}
+
+export default function App() {
+  const [user, setUser] = useState(null);
+  const [loadingAuth, setLoadingAuth] = useState(true);
+
+  const initialCols = () => {
+    return {
+      travel: TRAVEL_PRIORITIES.reduce((acc, p) => { acc[p.id] = []; return acc; }, {}),
+      move: MOVE_PRIORITIES.reduce((acc,a)=>{ acc[a.id]=[]; return acc; }, {}),
+    };
+  };
+
+  const [columns, setColumns] = useState(() => {
+    const raw = localStorage.getItem(LOCAL_KEY);
+    if (raw) {
+      try { return JSON.parse(raw); } catch {}
+    }
+    return initialCols();
+  });
+
+  /* handle incoming email links (passwordless sign-in) */
+  useEffect(() => {
+    if (isSignInWithEmailLink(auth, window.location.href)) {
+      const email = window.localStorage.getItem("emailForSignIn");
+      if (email) {
+        signInWithEmailLink(auth, email, window.location.href)
+          .catch((e) => console.error("SignIn error", e));
+        window.localStorage.removeItem("emailForSignIn");
+      }
+    }
+  }, []);
+
+  useEffect(() => {
+    const unsub = onAuthStateChanged(auth, (u) => {
+      setUser(u);
+      setLoadingAuth(false);
+      if (u) {
+        const docRef = doc(db, "lists", u.uid);
+        const unsubSnap = onSnapshot(docRef, (snap) => {
+          if (snap.exists()) {
+            const data = snap.data().columns;
+            if (data) setColumns(data);
+          }
+        });
+        return () => unsubSnap();
+      }
+    });
+    return () => unsub();
+  }, []);
+
+  const saveToCloud = useCallback(async (cols) => {
+    if (!user) return;
+    try {
+      await setDoc(doc(db, "lists", user.uid), { columns: cols }, { merge: true });
+    } catch (e) { console.error(e); }
+  }, [user]);
+
+  const saveToLocal = useCallback((cols) => {
+    localStorage.setItem(LOCAL_KEY, JSON.stringify(cols));
+  }, []);
+
+  const debCloud = useDebouncedSave(saveToCloud, 700);
+  const debLocal = useDebouncedSave(saveToLocal, 400);
+
+  useEffect(() => {
+    if (user) debCloud(columns);
+    else debLocal(columns);
+  }, [columns, user]);
+
+  /* Email-link login: send link */
+  const sendLoginLink = async (email) => {
+    const actionCodeSettings = {
+      url: window.location.origin,
+      handleCodeInApp: true,
+    };
+    try {
+      await sendSignInLinkToEmail(auth, email, actionCodeSettings);
+      window.localStorage.setItem("emailForSignIn", email);
+      alert("Login-Link gesendet. Schau in dein E-Mail-Postfach.");
+    } catch (e) {
+      alert("Fehler beim Senden: " + e.message);
+    }
+  };
+
+  const signOutUser = async () => {
+    await signOut(auth);
+  };
+
+  const addCountry = (category, name, priorityId) => {
+    if (!name) return;
+    const item = { id: uuidv4(), name: name.trim(), created: Date.now() };
+    setColumns(prev => {
+      const next = JSON.parse(JSON.stringify(prev));
+      next[category][priorityId] = [item, ...next[category][priorityId]];
+      return next;
+    });
+  };
+
+  const removeItem = (category, colId, id) => {
+    setColumns(prev => {
+      const next = JSON.parse(JSON.stringify(prev));
+      next[category][colId] = next[category][colId].filter(i => i.id !== id);
+      return next;
+    });
+  };
+
+  const onDragEnd = (result, category) => {
+    const { source, destination } = result;
+    if (!destination) return;
+    if (source.droppableId === destination.droppableId && source.index === destination.index) return;
+    setColumns(prev => {
+      const next = JSON.parse(JSON.stringify(prev));
+      const [moved] = next[category][source.droppableId].splice(source.index, 1);
+      next[category][destination.droppableId].splice(destination.index, 0, moved);
+      return next;
+    });
+  };
+
+  /* UI */
+  const [activeMainTab, setActiveMainTab] = useState("travel"); // travel | move
+  const [newCountry, setNewCountry] = useState("");
+  const [newPriority, setNewPriority] = useState(TRAVEL_PRIORITIES[0].id);
+  const [mapView, setMapView] = useState(false);
+  const [emailInput, setEmailInput] = useState("");
+
+  const allItems = [
+    ...Object.keys(columns.travel).flatMap(k => columns.travel[k].map(i => ({...i, priority:k, cat:"travel"}))),
+    ...Object.keys(columns.move).flatMap(k => columns.move[k].map(i => ({...i, priority:k, cat:"move"})))
+  ];
+
+  const createIcon = (color) => L.divIcon({
+    className: "custom-pin",
+    html: `<div style="background:${color};width:16px;height:16px;border-radius:16px;border:2px solid #111"></div>`
+  });
+
+  return (
+    <div className="min-h-screen bg-gray-900 text-gray-100 p-6">
+      <div className="max-w-6xl mx-auto">
+        <header className="flex items-center justify-between mb-6">
+          <h1 className="text-2xl font-semibold">Travel Priority — Leon</h1>
+          <div className="flex items-center gap-3">
+            {loadingAuth ? <div>Loading...</div> :
+              user ? (
+                <div className="flex items-center gap-2">
+                  {user.email && <div className="w-8 h-8 rounded-full bg-gray-700 flex items-center justify-center text-xs">{user.email.slice(0,1).toUpperCase()}</div>}
+                  <span className="text-sm">{user.email}</span>
+                  <button onClick={signOutUser} className="px-3 py-1 rounded bg-gray-800">Sign out</button>
+                </div>
+              ) : (
+                <div className="flex items-center gap-2">
+                  <input value={emailInput} onChange={(e)=>setEmailInput(e.target.value)} placeholder="E-Mail für Login-Link" className="p-2 rounded bg-gray-700 border border-gray-700 text-gray-100" />
+                  <button onClick={()=>sendLoginLink(emailInput)} className="px-3 py-2 rounded bg-blue-600">Login-Link senden</button>
+                </div>
+              )
+            }
+          </div>
+        </header>
+
+        <section className="mb-4 bg-gray-800 p-4 rounded-lg">
+          <div className="flex gap-3">
+            <div className="flex items-center gap-2">
+              <button onClick={()=>{ setActiveMainTab("travel"); setNewPriority(TRAVEL_PRIORITIES[0].id); }} className={`px-3 py-1 rounded ${activeMainTab==="travel" ? "bg-gray-700" : "bg-gray-800"}`}>✈️ Reise-Prioritäten</button>
+              <button onClick={()=>{ setActiveMainTab("move"); setNewPriority(MOVE_PRIORITIES[0].id); }} className={`px-3 py-1 rounded ${activeMainTab==="move" ? "bg-gray-700" : "bg-gray-800"}`}>🏡 Auswandern</button>
+            </div>
+
+            <div className="flex-1"></div>
+
+            <div className="flex items-center gap-2">
+              <button onClick={()=>setMapView(false)} className={`px-3 py-1 rounded ${!mapView ? "bg-gray-700" : "bg-gray-800"}`}>Listenansicht</button>
+              <button onClick={()=>setMapView(true)} className={`px-3 py-1 rounded ${mapView ? "bg-gray-700" : "bg-gray-800"}`}>Weltkarte</button>
+            </div>
+          </div>
+
+          <div className="mt-3 flex gap-3">
+            <input value={newCountry} onChange={(e)=>setNewCountry(e.target.value)} placeholder="Land hinzufügen (z.B. Romania)" className="flex-1 p-2 rounded bg-gray-700 border border-gray-700" />
+            <select value={newPriority} onChange={(e)=>setNewPriority(e.target.value)} className="p-2 rounded bg-gray-700">
+              {(activeMainTab==="travel" ? TRAVEL_PRIORITIES : MOVE_PRIORITIES).map(p => <option key={p.id} value={p.id}>{p.title}</option>)}
+            </select>
+            <button onClick={()=>{
+              addCountry(activeMainTab, newCountry, newPriority);
+              setNewCountry("");
+            }} className="px-3 py-2 bg-green-500 rounded">Hinzufügen</button>
+          </div>
+        </section>
+
+        {!mapView ? (
+          <div>
+            {activeMainTab==="travel" ? (
+              <DragDropContext onDragEnd={(res)=>onDragEnd(res,"travel")}>
+                <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+                  {TRAVEL_PRIORITIES.map(col => (
+                    <Droppable key={col.id} droppableId={col.id}>
+                      {(provided)=>(
+                        <div ref={provided.innerRef} {...provided.droppableProps} className="bg-gray-800 p-3 rounded-lg min-h-[200px]">
+                          <h2 className="font-semibold mb-2" style={{display:"flex", gap:8, alignItems:"center"}}>
+                            <span style={{width:12,height:12, background:col.color, display:"inline-block", borderRadius:4}}></span>
+                            {col.title}
+                          </h2>
+                          <div className="space-y-2 min-h-[120px]">
+                            {columns.travel[col.id] && columns.travel[col.id].map((item, idx)=>(
+                              <Draggable key={item.id} draggableId={item.id} index={idx}>
+                                {(prov)=>(
+                                  <div ref={prov.innerRef} {...prov.draggableProps} {...prov.dragHandleProps} className="p-2 border rounded flex items-center justify-between bg-gray-700">
+                                    <div className="text-sm">{item.name}</div>
+                                    <div className="flex items-center gap-2">
+                                      <div className="text-xs text-gray-400">{new Date(item.created).toLocaleDateString()}</div>
+                                      <button onClick={()=>removeItem("travel", col.id, item.id)} className="text-red-400 text-xs">✕</button>
+                                    </div>
+                                  </div>
+                                )}
+                              </Draggable>
+                            ))}
+                            {provided.placeholder}
+                          </div>
+                        </div>
+                      )}
+                    </Droppable>
+                  ))}
+                </div>
+              </DragDropContext>
+            ) : (
+              <DragDropContext onDragEnd={(res)=>onDragEnd(res,"move")}>
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                  {MOVE_PRIORITIES.map(col => (
+                    <Droppable key={col.id} droppableId={col.id}>
+                      {(provided)=>(
+                        <div ref={provided.innerRef} {...provided.droppableProps} className="bg-gray-800 p-3 rounded-lg min-h-[200px]">
+                          <h2 className="font-semibold mb-2" style={{display:"flex", gap:8, alignItems:"center"}}>
+                            <span style={{width:12,height:12, background:col.color, display:"inline-block", borderRadius:4}}></span>
+                            {col.title}
+                          </h2>
+                          <div className="space-y-2 min-h-[120px]">
+                            {columns.move[col.id] && columns.move[col.id].map((item, idx)=>(
+                              <Draggable key={item.id} draggableId={item.id} index={idx}>
+                                {(prov)=>(
+                                  <div ref={prov.innerRef} {...prov.draggableProps} {...prov.dragHandleProps} className="p-2 border rounded flex items-center justify-between bg-gray-700">
+                                    <div className="text-sm">{item.name}</div>
+                                    <div className="flex items-center gap-2">
+                                      <div className="text-xs text-gray-400">{new Date(item.created).toLocaleDateString()}</div>
+                                      <button onClick={()=>removeItem("move", col.id, item.id)} className="text-red-400 text-xs">✕</button>
+                                    </div>
+                                  </div>
+                                )}
+                              </Draggable>
+                            ))}
+                            {provided.placeholder}
+                          </div>
+                        </div>
+                      )}
+                    </Droppable>
+                  ))}
+                </div>
+              </DragDropContext>
+            )}
+          </div>
+        ) : (
+          <div className="bg-gray-800 p-3 rounded-lg">
+            <div className="mb-2 flex items-center justify-between">
+              <h3 className="font-semibold">Weltkarte</h3>
+              <div className="text-sm text-gray-400">Legende:
+                <span className="ml-3">Reise: {TRAVEL_PRIORITIES.map(p => <span key={p.id} className="ml-2" style={{color:p.color}}>{p.title}</span>)}</span>
+                <span className="ml-3">Auswandern: {MOVE_PRIORITIES.map(p => <span key={p.id} className="ml-2" style={{color:p.color}}>{p.title}</span>)}</span>
+              </div>
+            </div>
+            <MapContainer center={[20,0]} zoom={2} className="leaflet-container">
+              <TileLayer attribution='&copy; OpenStreetMap contributors' url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" />
+              {allItems.map(it => {
+                const coords = COUNTRY_COORDS[it.name];
+                if (!coords) return null;
+                const color = (it.cat==="travel"
+                  ? (TRAVEL_PRIORITIES.find(p => p.id===it.priority)?.color)
+                  : (MOVE_PRIORITIES.find(p => p.id===it.priority)?.color)
+                ) || "#fff";
+                return (
+                  <Marker key={it.id} position={coords} icon={createIcon(color)}>
+                    <Popup><strong>{it.name}</strong><br/>{it.cat==="travel" ? TRAVEL_PRIORITIES.find(p=>p.id===it.priority)?.title : MOVE_PRIORITIES.find(p=>p.id===it.priority)?.title}</Popup>
+                  </Marker>
+                );
+              })}
+            </MapContainer>
+            <div className="mt-3 text-sm text-gray-400">Tipp: Für Länder ohne Marker: füge sie in COUNTRY_COORDS in src/App.jsx hinzu.</div>
+          </div>
+        )}
+
+        <footer className="mt-6 text-sm text-gray-500">Gespeichert lokal oder in deiner Firebase (nur du kannst schreiben). Teile den Link zum Ansehen.</footer>
+      </div>
+    </div>
+  );
+}
