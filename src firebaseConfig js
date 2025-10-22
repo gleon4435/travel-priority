@@ -1,0 +1,9 @@
+const firebaseConfig = {
+  apiKey: "AIzaSyBXJjmGEsQnmH38M5MajlaryDv2WUksvxc",
+  authDomain: "travel-priority.firebaseapp.com",
+  projectId: "travel-priority",
+  storageBucket: "travel-priority.firebasestorage.app",
+  messagingSenderId: "444518575815",
+  appId: "1:444518575815:web:edd00cf037e5356bb518e2",
+  measurementId: "G-37JET2BR5M"
+};
