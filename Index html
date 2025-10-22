@@ -1,0 +1,145 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Travel Priority 🌍</title>
+  <style>
+    body {
+      margin: 0;
+      font-family: system-ui, sans-serif;
+      background-color: #121212;
+      color: #eee;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 10px;
+    }
+
+    header {
+      width: 100%;
+      text-align: center;
+      padding: 10px;
+      background-color: #1e1e1e;
+      position: sticky;
+      top: 0;
+    }
+
+    button {
+      background-color: #333;
+      color: white;
+      border: none;
+      padding: 8px 16px;
+      border-radius: 8px;
+      margin: 5px;
+      cursor: pointer;
+    }
+
+    button:hover {
+      background-color: #555;
+    }
+
+    #list, #map {
+      width: 100%;
+      max-width: 800px;
+      margin-top: 15px;
+    }
+
+    ul {
+      list-style: none;
+      padding: 0;
+    }
+
+    li {
+      background-color: #1f1f1f;
+      padding: 10px;
+      margin-bottom: 6px;
+      border-radius: 8px;
+      display: flex;
+      justify-content: space-between;
+    }
+
+    iframe {
+      width: 100%;
+      height: 450px;
+      border: none;
+      border-radius: 8px;
+    }
+
+    .hidden {
+      display: none;
+    }
+  </style>
+
+  <!-- Firebase -->
+  <script type="module">
+    // Import Firebase
+    import { initializeApp } from "https://www.gstatic.com/firebasejs/11.0.1/firebase-app.js";
+    import { getFirestore, collection, getDocs } from "https://www.gstatic.com/firebasejs/11.0.1/firebase-firestore.js";
+
+    const firebaseConfig = {
+      apiKey: "AIzaSyBXJjmGEsQnmH38M5MajlaryDv2WUksvxc",
+      authDomain: "travel-priority.firebaseapp.com",
+      projectId: "travel-priority",
+      storageBucket: "travel-priority.firebasestorage.app",
+      messagingSenderId: "444518575815",
+      appId: "1:444518575815:web:edd00cf037e5356bb518e2",
+      measurementId: "G-37JET2BR5M"
+    };
+
+    const app = initializeApp(firebaseConfig);
+    const db = getFirestore(app);
+
+    async function loadList() {
+      const listEl = document.getElementById("countries");
+      listEl.innerHTML = "";
+      const querySnapshot = await getDocs(collection(db, "countries"));
+      querySnapshot.forEach((doc) => {
+        const data = doc.data();
+        const li = document.createElement("li");
+        li.innerHTML = `<span>${data.name}</span><span style="color:${data.color}">${data.color}</span>`;
+        listEl.appendChild(li);
+      });
+    }
+
+    document.addEventListener("DOMContentLoaded", loadList);
+  </script>
+</head>
+
+<body>
+  <header>
+    <h2>Travel Priority 🌍</h2>
+    <button id="showList">📝 Liste</button>
+    <button id="showMap">🗺️ Karte</button>
+  </header>
+
+  <section id="list">
+    <ul id="countries">
+      <li>Lade Daten...</li>
+    </ul>
+  </section>
+
+  <section id="map" class="hidden">
+    <iframe
+      src="https://www.google.com/maps/d/embed?mid=1l8y4O1fK7w1_legend_example"
+      allowfullscreen>
+    </iframe>
+  </section>
+
+  <script>
+    const listView = document.getElementById("list");
+    const mapView = document.getElementById("map");
+    const showListBtn = document.getElementById("showList");
+    const showMapBtn = document.getElementById("showMap");
+
+    showListBtn.onclick = () => {
+      listView.classList.remove("hidden");
+      mapView.classList.add("hidden");
+    };
+    showMapBtn.onclick = () => {
+      listView.classList.add("hidden");
+      mapView.classList.remove("hidden");
+    };
+  </script>
+</body>
+</html>
